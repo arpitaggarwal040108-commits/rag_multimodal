@@ -83,6 +83,33 @@ def _visual_url(image_path: Path) -> str | None:
     return "/visuals/" + relative_path.as_posix()
 
 
+
+def _clip_text_for_chunk(text: str) -> str:
+    """Truncate document text safely for CLIP's 77-token limit."""
+    from app.services.embeddings import _truncate_clip_text, get_clip
+
+    return _truncate_clip_text(str(text), get_clip())
+
+
+def _figure_page_number(image_path: Path, fallback: int) -> int:
+    """Infer a page number from common extractor filename conventions."""
+    stem = image_path.stem
+    patterns = (
+        r"(?:page|pg|p)[_ -]?(\d+)",
+        r"(?:^|[_ -])(\d+)(?:[_ -]|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, stem, flags=re.IGNORECASE)
+        if match:
+            try:
+                number = int(match.group(1))
+                if number > 0:
+                    return number
+            except (TypeError, ValueError):
+                pass
+    return fallback
+
+
 def ingest_file(
     path: str | Path,
     workspace_id: str = "default",
@@ -126,10 +153,15 @@ def ingest_file(
             chunk["workspace_id"] = workspace_id
             chunk["original_filename"] = display_name
 
-        clip_vectors = embed_texts(
-            [chunk["text"] for chunk in chunks],
-            "clip",
-        )
+        # CLIP is used for visual/cross-modal retrieval. Its text encoder
+        # has a 77-token limit, so encode short representations of chunks.
+        clip_texts = [
+            _clip_text_for_chunk(chunk["text"])
+            for chunk in chunks
+        ]
+        clip_vectors = embed_texts(clip_texts, "clip")
+
+        # MiniLM receives the complete chunk text for semantic text retrieval.
         minilm_vectors = embed_texts(
             [chunk["text"] for chunk in chunks],
             "minilm",
@@ -145,11 +177,12 @@ def ingest_file(
         visual_metadata = []
         visual_paths = []
 
-        for page_number, figure in enumerate(
+        for figure_index, figure in enumerate(
             extracted.get("figures", []),
             start=1,
         ):
             image_path = Path(figure)
+            page_number = _figure_page_number(image_path, figure_index)
 
             if not image_path.is_file():
                 continue
@@ -172,14 +205,16 @@ def ingest_file(
                 continue
 
             visual_paths.append(str(image_path))
-            visual_metadata.append({
-                "source": path.name,
-                "original_filename": display_name,
-                "page": page_number,
-                "path": str(image_path),
-                "url": url,
-                "workspace_id": workspace_id,
-            })
+            visual_metadata.append(
+                {
+                    "source": path.name,
+                    "original_filename": display_name,
+                    "page": page_number,
+                    "path": str(image_path),
+                    "url": url,
+                    "workspace_id": workspace_id,
+                }
+            )
 
         if visual_paths:
             visual_vectors = embed_images(visual_paths)
@@ -200,14 +235,110 @@ def ingest_file(
         }
 
     except Exception:
-        if is_pdf:
-            shutil.rmtree(visual_dir, ignore_errors=True)
+        # Do not remove visual_dir here: it may contain assets from an earlier
+        # successful ingestion of the same document. Cleanup is intentionally
+        # conservative so a failed re-index cannot delete existing assets.
         raise
 
 
+
+def _build_retrieval_queries(question: str) -> list[str]:
+    """Create focused subqueries for explicit comparison dimensions in a question."""
+    question = re.sub(r"\s+", " ", str(question or "")).strip()
+    queries = [question]
+    lower = question.lower()
+
+    # Preserve the user's wording while ensuring each explicitly named method
+    # can retrieve its own evidence instead of competing in one broad query.
+    method_patterns = [
+        r"image[\s-]*based RAG",
+        r"image\s*\+\s*text[\s-]*based RAG",
+        r"image[\s-]*and[\s-]*text[\s-]*based RAG",
+        r"page[\s-]*level retrieval",
+        r"element[\s-]*level retrieval",
+    ]
+    methods = []
+    for pattern in method_patterns:
+        match = re.search(pattern, question, flags=re.IGNORECASE)
+        if match:
+            value = match.group(0)
+            if value.lower() not in {item.lower() for item in methods}:
+                methods.append(value)
+
+    metric_patterns = [
+        r"retrieval accuracy",
+        r"computational cost",
+        r"latency",
+        r"scalability",
+        r"precision",
+        r"recall",
+        r"F1(?:[\s-]*score)?",
+    ]
+    metrics = []
+    for pattern in metric_patterns:
+        match = re.search(pattern, question, flags=re.IGNORECASE)
+        if match:
+            metrics.append(match.group(0))
+
+    for method in methods:
+        queries.append(f"{method} definition advantages limitations evidence")
+    for metric in metrics:
+        queries.append(f"{metric} measured results comparison evidence")
+
+    # Stable de-duplication; the original question always remains first.
+    result = []
+    seen = set()
+    for query in queries:
+        key = query.casefold().strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(query)
+    return result
+
+
+def _merge_ranked_results(result_sets: list[list[dict]], limit: int) -> list[dict]:
+    """Fuse query-specific rankings without assuming scores from different queries are calibrated."""
+    fused = {}
+    for result_set in result_sets:
+        for rank, item in enumerate(result_set, start=1):
+            identity = (
+                item.get("workspace_id", "default"),
+                item.get("source", item.get("original_filename", "unknown")),
+                item.get("chunk_id", item.get("global_id", item.get("chunk_index", "unknown"))),
+                item.get("page"),
+                str(item.get("text", ""))[:300],
+            )
+            record = fused.setdefault(identity, {"item": dict(item), "rrf": 0.0, "best_rank": rank})
+            record["rrf"] += 1.0 / (60 + rank)
+            record["best_rank"] = min(record["best_rank"], rank)
+            # Keep the strongest observed per-query score as diagnostic metadata.
+            try:
+                score = float(item.get("score", 0.0))
+            except (TypeError, ValueError):
+                score = 0.0
+            record["item"]["best_query_score"] = max(
+                float(record["item"].get("best_query_score", score)), score
+            )
+    
+    ordered = sorted(
+        fused.values(),
+        key=lambda record: (
+            record["rrf"],
+            record["item"].get("best_query_score", 0.0),
+        ),
+        reverse=True,
+    )
+
+    results = []
+    for record in ordered[:limit]:
+        item = record["item"]
+        item["multi_query_rrf_score"] = round(record["rrf"], 6)
+        results.append(item)
+    return results
+
 def query_rag(
     question: str,
-    top_k: int = 5,
+    top_k: int = 8,
     workspace_id: str = "default",
 ) -> dict:
     question = str(question or "").strip()
@@ -218,6 +349,11 @@ def query_rag(
     top_k = _validate_top_k(top_k)
     workspace_id = _validate_workspace(workspace_id)
 
+    # The API may explicitly send a small top_k (for example, 3).
+    # Keep a useful minimum for evidence-grounded answers without changing
+    # the underlying indexes or any ingestion/embedding behavior.
+    retrieval_k = max(top_k, 8)
+
     chunks = all_chunks(workspace_id)
 
     if not chunks:
@@ -225,35 +361,76 @@ def query_rag(
             "This workspace has no indexed documents. Upload a document first."
         )
 
-    ranked = rerank(
-        question,
-        top_k=top_k,
-        workspace_id=workspace_id,
+    # Run the original query plus focused subqueries for explicitly requested
+    # methods and metrics. This improves evidence coverage without touching indexes.
+    retrieval_queries = _build_retrieval_queries(question)
+    per_query_k = max(retrieval_k, 8)
+    ranked_sets = [
+        rerank(query, top_k=per_query_k, workspace_id=workspace_id)
+        for query in retrieval_queries
+    ]
+    ranked = _merge_ranked_results(
+        ranked_sets,
+        limit=min(20, max(retrieval_k, 8)),
     )
 
-    # Retrieve visuals before generation so the vision model can inspect them.
-    query_vector = embed_texts([question], "clip")
+    print("\n========== INSIGHTFORGE RETRIEVED TEXT ==========")
+    print("Retrieval queries:", retrieval_queries)
+    for i, chunk in enumerate(ranked, start=1):
+        print(
+            f"\n--- Chunk {i} | "
+            f"Source: {chunk.get('original_filename', chunk.get('source'))} | "
+            f"Page: {chunk.get('page')} | "
+            f"Score: {chunk.get('score')} | "
+            f"Multi-query RRF: {chunk.get('multi_query_rrf_score')} ---"
+        )
+        print(str(chunk.get("text", ""))[:2000])
+        print("=================================================\n")
 
-    visual_results = search_visuals(
-        query_vector,
-        top_k=top_k,
-        workspace_id=workspace_id,
-    )
+    # Search visuals using the same focused query set, then fuse the rankings.
+    visual_sets = []
+    for retrieval_query in retrieval_queries:
+        query_vector = embed_texts([retrieval_query], "clip")
+        visual_set = search_visuals(
+            query_vector,
+            top_k=per_query_k,
+            workspace_id=workspace_id,
+        )
+        visual_sets.append(visual_set or [])
+
+    visual_fused = {}
+    for visual_set in visual_sets:
+        for rank, visual in enumerate(visual_set, start=1):
+            if not isinstance(visual, dict):
+                continue
+            identity = (
+                visual.get("workspace_id", workspace_id),
+                visual.get("source", visual.get("original_filename", "unknown")),
+                visual.get("page"),
+                visual.get("path", visual.get("url", "")),
+            )
+            record = visual_fused.setdefault(identity, {"item": dict(visual), "rrf": 0.0})
+            record["rrf"] += 1.0 / (60 + rank)
+
+    visual_results = [
+        record["item"]
+        for record in sorted(
+            visual_fused.values(),
+            key=lambda record: record["rrf"],
+            reverse=True,
+        )[:min(20, max(retrieval_k, 8))]
+    ]
 
     accessible_visuals = []
-
     for visual in visual_results:
         item = dict(visual)
         url = item.get("url")
-
         if not url and item.get("path"):
             url = _visual_url(Path(item["path"]))
-
         if url:
             item["url"] = url
             accessible_visuals.append(item)
 
-    # Both text and visual evidence are now available to the answer stage.
     result = generate_answer(
         question=question,
         chunks=ranked,
@@ -399,11 +576,12 @@ def reindex_visuals_only(
     visual_paths = []
     visual_metadata = []
 
-    for page_number, figure in enumerate(
+    for figure_index, figure in enumerate(
         extracted.get("figures", []),
         start=1,
     ):
         image_path = Path(figure)
+        page_number = _figure_page_number(image_path, figure_index)
 
         if not image_path.is_file():
             continue
@@ -414,14 +592,16 @@ def reindex_visuals_only(
             continue
 
         visual_paths.append(str(image_path))
-        visual_metadata.append({
-            "source": path.name,
-            "original_filename": display_name,
-            "page": page_number,
-            "path": str(image_path),
-            "url": url,
-            "workspace_id": workspace_id,
-        })
+        visual_metadata.append(
+            {
+                "source": path.name,
+                "original_filename": display_name,
+                "page": page_number,
+                "path": str(image_path),
+                "url": url,
+                "workspace_id": workspace_id,
+            }
+        )
 
     if visual_paths:
         vectors = embed_images(visual_paths)

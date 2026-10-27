@@ -942,3 +942,16 @@ For every stage, ask: what is the input, what transformation happens, what is th
 ## Final note for contributors
 
 Use the current source code, dependency files, and FastAPI `/docs` page as the authority for implementation-specific details. This README explains the system's intended design and gives a practical local setup path; it should be updated whenever endpoint names, model settings, storage formats, or pipeline behavior change.
+
+
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+Using only evidence from the uploaded research paper, compare image-based RAG, image+text-based RAG, page-level retrieval, and element-level retrieval.
+
+First, distinguish retrieval modality (image-only vs. image+text) from retrieval granularity (page-level vs. element-level). Explain how each approach works, its advantages, and its limitations, using only claims supported by the paper.
+
+Include a Markdown comparison table with these exact columns: Approach, Retrieval mechanism, Advantages, Limitations, Retrieval accuracy, Computational cost, Latency, and Scalability.
+
+For every metric, provide reported measurements only if the paper explicitly provides them. Otherwise, write "Not reported in the paper."
+
+Cite exact printed page numbers for important claims. Do not invent numerical results, author citations, method examples, or limitations. Clearly distinguish explicit findings from reasonable inferences. If the evidence is insufficient, state what is missing. Avoid generic explanations and unrelated topics.

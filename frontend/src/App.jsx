@@ -18,7 +18,17 @@ import {
 } from 'lucide-react';
 
 const API =
-  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+  (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+
+async function readApiResponse(response) {
+  const raw = await response.text();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { detail: raw.slice(0, 500) || `HTTP ${response.status}` };
+  }
+}
 
 export default function App() {
   const [papers, setPapers] = useState([]);
@@ -48,7 +58,7 @@ export default function App() {
       const response = await fetch(`${API}/api/papers?workspace_id=${encodeURIComponent(targetWorkspaceId)}`);
       if (!response.ok) throw new Error('Failed to load papers.');
 
-      const data = await response.json();
+      const data = await readApiResponse(response);
       setPapers(data.papers || []);
       setPaperStats({
         paperCount: data.paper_count,
@@ -69,7 +79,7 @@ export default function App() {
   async function refreshWorkspaces() {
     try {
       const response = await fetch(`${API}/api/workspaces`);
-      const data = await response.json();
+      const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.detail || 'Failed to load workspaces.');
       const items = data.workspaces || [];
       setWorkspaces(items.length ? items : [{ id: 'default', name: 'General Research' }]);
@@ -104,7 +114,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim() }),
       });
-      const data = await response.json();
+      const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.detail || 'Could not create workspace.');
       await refreshWorkspaces();
       await changeWorkspace(data.workspace.id);
@@ -133,7 +143,7 @@ export default function App() {
           body: form,
         });
 
-        const data = await response.json();
+        const data = await readApiResponse(response);
 
         if (!response.ok) {
           throw new Error(
@@ -176,7 +186,7 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      const data = await readApiResponse(response);
 
       if (!response.ok) {
         throw new Error(data.detail || 'Query failed.');
@@ -202,7 +212,7 @@ export default function App() {
         `${API}/api/papers/${encodeURIComponent(paper.filename)}?workspace_id=${encodeURIComponent(workspaceId)}`,
         { method: 'DELETE' },
       );
-      const data = await response.json();
+      const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.detail || 'Could not delete paper.');
       setAnswer(null);
       await refreshPapers(workspaceId);
@@ -232,7 +242,7 @@ export default function App() {
         method: 'DELETE',
       });
 
-      const data = await response.json();
+      const data = await readApiResponse(response);
 
       if (!response.ok) {
         throw new Error(data.detail || 'Could not clear the library.');
@@ -256,8 +266,8 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">
-            <BookOpen size={22} />
-          </span>
+  <img src="/insightforge-logo.svg" alt="InsightForge" />
+</span>
           <div>
             <b>InsightForge</b>
             <small>RESEARCH WORKSPACE</small>
@@ -472,8 +482,7 @@ export default function App() {
                     </span>
                     <h3>Searching your research library</h3>
                     <p>
-                      Comparing evidence across both indexes and preparing
-                      source references.
+                      Finding relevant passages and preparing source references.
                     </p>
                     <div className="loading-bar"><span /></div>
                   </div>
@@ -530,6 +539,36 @@ export default function App() {
                         {answer.answer || 'No answer was generated.'}
                       </ReactMarkdown>
                     </div>
+
+                    {Array.isArray(answer.visual_results) && answer.visual_results.length > 0 && (
+                      <section className="visual-evidence" aria-label="Retrieved visual evidence">
+                        <div className="section-heading">
+                          <div>
+                            <span className="results-kicker">FIGURES & VISUALS</span>
+                            <h4>Related visual evidence</h4>
+                          </div>
+                          <span className="section-count">{answer.visual_results.length}</span>
+                        </div>
+                        <div className="visual-results-grid">
+                          {answer.visual_results.map((visual, index) => {
+                            const rawUrl = visual.url || '';
+                            const imageUrl = rawUrl && (/^https?:\/\//i.test(rawUrl) ? rawUrl : `${API}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`);
+                            const sourceName = visual.original_filename || visual.source || 'Research document';
+                            return (
+                              <article className="visual-result-card" key={`${sourceName}-${visual.page ?? 'page'}-${index}`}>
+                                <a className="visual-preview" href={imageUrl || undefined} target="_blank" rel="noopener noreferrer" aria-label={`Open visual from ${sourceName}`}>
+                                  {imageUrl ? <img src={imageUrl} alt={`Retrieved visual from ${sourceName}${visual.page ? `, page ${visual.page}` : ''}`} loading="lazy" /> : <span className="visual-placeholder">Preview unavailable</span>}
+                                </a>
+                                <div className="visual-result-info">
+                                  <b title={sourceName}>{sourceName}</b>
+                                  <small>{visual.page != null ? `Page ${visual.page}` : 'Page not available'}</small>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
 
                     <div className="sources-title">
                       SUPPORTING PASSAGES

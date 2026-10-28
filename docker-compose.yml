@@ -1,10 +1,18 @@
 services:
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_MINERU: ${INSTALL_MINERU:-false}
     env_file:
       - ./backend/.env
+    environment:
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
     ports:
       - "8000:8000"
     volumes:
       - ./backend/data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped

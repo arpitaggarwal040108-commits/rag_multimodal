@@ -1,8 +1,9 @@
 
+import os
 import re
 from collections import Counter
 
-from app.services.vision import explain_research_images
+from app.services.vision import answer_research_text, explain_research_images
 
 
 _STOPWORDS = {
@@ -132,6 +133,8 @@ def _source_record(chunk: dict) -> dict:
         "page": chunk.get("page"),
         "chunk_index": chunk.get("global_id", chunk_id),
         "score": chunk.get("score"),
+        "chunk_type": chunk.get("chunk_type", "text"),
+        "section_title": chunk.get("section_title"),
         "text": chunk.get("text", ""),
     }
 
@@ -590,7 +593,7 @@ def generate_answer(
     Preserves the existing function signature and response fields.
     """
     question = _clean_text(question)
-    print("[InsightForge] generation grounding v3 active")
+    print("[Research Prism] generation grounding v3 active")
 
     if not question:
         return _abstention("Please enter a research question.")
@@ -652,7 +655,25 @@ def generate_answer(
             fallback["answer_mode"] = "text_fallback"
             return fallback
 
+    # Text-only queries should also use the configured local model when enabled.
+    # If Ollama is unavailable or the output fails grounding/format checks, retain
+    # the deterministic extractive fallback rather than blocking the research UI.
+    enable_text_generation = os.getenv("ENABLE_TEXT_GENERATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+    if enable_text_generation and chunks:
+        try:
+            text_answer = answer_research_text(question, text_context)
+            if text_answer.get("available") and str(text_answer.get("answer", "")).strip():
+                return {
+                    "answer": _validate_visual_answer(_clean_text(text_answer["answer"])),
+                    "sources": _deduplicate_source_records(chunks),
+                    "answer_mode": "local_llm_text",
+                    "vision_model": text_answer.get("model", "unknown"),
+                }
+            if text_answer.get("reason"):
+                print(f"[Research Prism] Text generation unavailable; using extractive fallback: {text_answer['reason']}")
+        except Exception as exc:
+            print(f"[Research Prism] Text generation failed; using extractive fallback: {exc}")
+
     result = _generate_text_answer(question, chunks)
     result["answer_mode"] = "extractive_text"
-
     return result

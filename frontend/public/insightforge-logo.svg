@@ -1,14 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg"
-     width="48" height="48" viewBox="0 0 48 48"
-     fill="none">
-  <g stroke="#285BE7" stroke-width="2.6"
-     stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10 24 L24 10 L38 24 L24 38 Z"/>
-    <path d="M10 24 H38"/>
-    <path d="M24 10 V38"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="InsightForge mark">
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#34495E"/>
+  <g stroke="#F7F9FB" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 20.5 31.5 31.5 45 18.5"/>
+    <path d="M31.5 31.5 45 45.5"/>
+    <path d="M31.5 31.5 18.5 46"/>
   </g>
-  <circle cx="10" cy="24" r="4" fill="#FF906C"/>
-  <circle cx="24" cy="10" r="4" fill="#285BE7"/>
-  <circle cx="38" cy="24" r="4" fill="#159B83"/>
-  <circle cx="24" cy="38" r="4" fill="#285BE7"/>
+  <circle cx="18" cy="20.5" r="5" fill="#F7F9FB"/>
+  <circle cx="45" cy="18.5" r="5" fill="#F7F9FB"/>
+  <circle cx="31.5" cy="31.5" r="6" fill="#CBD5DF" stroke="#34495E" stroke-width="2"/>
+  <circle cx="18.5" cy="46" r="5" fill="#F7F9FB"/>
+  <circle cx="45" cy="45.5" r="5" fill="#F7F9FB"/>
 </svg>

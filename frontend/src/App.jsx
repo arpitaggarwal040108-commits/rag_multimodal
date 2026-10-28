@@ -266,10 +266,10 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">
-  <img src="/insightforge-logo.svg" alt="InsightForge" />
+  <img src="/insightforge-logo.svg" alt="Research Prism logo" />
 </span>
           <div>
-            <b>InsightForge</b>
+            <b>Research Prism</b>
             <small>RESEARCH WORKSPACE</small>
           </div>
         </div>
@@ -846,7 +846,7 @@ export default function App() {
         )}
 
         <footer>
-          <span>INSIGHTFORGE</span>
+          <span>RESEARCH PRISM</span>
           <span>FastAPI · FAISS · Local storage</span>
           <span>Research responsibly. Verify citations.</span>
         </footer>

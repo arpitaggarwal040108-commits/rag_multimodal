@@ -1,27 +1,30 @@
-.env
-backend/.env
-.venv/
-__pycache__/
-*.py[cod]
-frontend/node_modules/
-frontend/dist/
-backend/data/papers/*
-backend/data/indices/*
-!backend/data/papers/.gitkeep
-!backend/data/indices/.gitkeep
+# Python
 .venv/
 venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Secrets
 .env
+backend/.env
 .env.*
-!.env.example
+!backend/.env.example
+
+# Frontend
 node_modules/
-dist/
+frontend/node_modules/
 frontend/dist/
+
+# User data, models, indexes and generated assets
+backend/data/*
+!backend/data/.gitkeep
 backend/data/papers/
 backend/data/visuals/
+backend/data/qdrant/
 backend/data/indices/
-backend/data/indices_backup/
 *.index
+*.pt
+*.bin
 .DS_Store

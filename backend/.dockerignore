@@ -1,0 +1,21 @@
+# Python environments/caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# User documents, extracted assets, and local databases are mounted at runtime.
+data/*
+!data/.gitkeep
+
+# Model files / transient outputs
+*.index
+*.pt
+*.bin

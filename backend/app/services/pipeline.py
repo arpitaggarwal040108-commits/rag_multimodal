@@ -1,15 +1,17 @@
 
 from pathlib import Path
+import os
 import re
 import shutil
 
 from app.services.extraction import extract_text
-from app.services.chunking import semantic_chunk
+from app.services.chunking import semantic_chunk, chunk_structured_blocks
 from app.services.embeddings import embed_texts, embed_images
 from app.services.vector_store import (
     add_chunks,
     add_visuals,
     all_chunks,
+    all_visuals,
     clear,
     delete_document,
     search_visuals,
@@ -133,46 +135,45 @@ def ingest_file(
 
         text = extracted.get("text", "").strip()
 
-        if not text:
-            raise ValueError(
-                f"No readable text could be extracted from {display_name}."
-            )
-
+        chunk_pages = None if extracted.get("primary_text_from_mineru") else extracted.get("pages", [])
         chunks = semantic_chunk(
             text,
             path.name,
-            pages=extracted.get("pages", []),
+            pages=chunk_pages,
+            target_words=int(os.getenv("CHUNK_TARGET_WORDS", "420")),
+            overlap_words=int(os.getenv("CHUNK_OVERLAP_WORDS", "60")),
         )
+        structured_chunks = chunk_structured_blocks(
+            extracted.get("structured_blocks", []),
+            path.name,
+            start_id=len(chunks),
+            target_words=int(os.getenv("CHUNK_TARGET_WORDS", "420")),
+            overlap_words=int(os.getenv("CHUNK_OVERLAP_WORDS", "60")),
+        )
+        chunks.extend(structured_chunks)
 
-        if not chunks:
+        # A scanned/visual-only PDF can still be useful when its page images
+        # were successfully rendered. Do not reject it solely for empty OCR.
+        if not chunks and not extracted.get("figures"):
             raise ValueError(
-                f"No searchable text chunks were created for {display_name}."
+                f"No readable text or visual assets could be extracted from {display_name}."
             )
 
         for chunk in chunks:
             chunk["workspace_id"] = workspace_id
             chunk["original_filename"] = display_name
 
-        # CLIP is used for visual/cross-modal retrieval. Its text encoder
-        # has a 77-token limit, so encode short representations of chunks.
-        clip_texts = [
-            _clip_text_for_chunk(chunk["text"])
-            for chunk in chunks
-        ]
-        clip_vectors = embed_texts(clip_texts, "clip")
+        for index, chunk in enumerate(chunks):
+            chunk["chunk_id"] = index
+            chunk["chunk_type"] = chunk.get("chunk_type", "text")
 
-        # MiniLM receives the complete chunk text for semantic text retrieval.
-        minilm_vectors = embed_texts(
-            [chunk["text"] for chunk in chunks],
-            "minilm",
-        )
-
-        add_chunks(
-            chunks,
-            clip_vectors,
-            minilm_vectors,
-            workspace_id=workspace_id,
-        )
+        if chunks:
+            # CLIP is retained for cross-modal text/figure search; it has a
+            # 77-token input limit. BGE-M3 produces the primary text vectors.
+            clip_texts = [_clip_text_for_chunk(chunk["text"]) for chunk in chunks]
+            clip_vectors = embed_texts(clip_texts, "clip")
+            text_vectors = embed_texts([chunk["text"] for chunk in chunks], "minilm")
+            add_chunks(chunks, clip_vectors, text_vectors, workspace_id=workspace_id)
 
         visual_metadata = []
         visual_paths = []
@@ -210,6 +211,7 @@ def ingest_file(
                     "source": path.name,
                     "original_filename": display_name,
                     "page": page_number,
+                    "asset_type": "figure_crop" if image_path.stem.startswith("figure_") else "page_render",
                     "path": str(image_path),
                     "url": url,
                     "workspace_id": workspace_id,
@@ -355,11 +357,11 @@ def query_rag(
     retrieval_k = max(top_k, 8)
 
     chunks = all_chunks(workspace_id)
-
-    if not chunks:
-        raise ValueError(
-            "This workspace has no indexed documents. Upload a document first."
-        )
+    visuals_in_workspace = all_visuals(workspace_id)
+    if not chunks and not visuals_in_workspace:
+        raise ValueError("This workspace has no indexed documents. Upload a document first.")
+    # Do not fail just because there are no text chunks: a visual-only or
+    # scanned document may still be answerable from its indexed page images.
 
     # Run the original query plus focused subqueries for explicitly requested
     # methods and metrics. This improves evidence coverage without touching indexes.
@@ -374,7 +376,7 @@ def query_rag(
         limit=min(20, max(retrieval_k, 8)),
     )
 
-    print("\n========== INSIGHTFORGE RETRIEVED TEXT ==========")
+    print("\n========== RESEARCH PRISM RETRIEVED TEXT ==========")
     print("Retrieval queries:", retrieval_queries)
     for i, chunk in enumerate(ranked, start=1):
         print(
@@ -452,6 +454,7 @@ def query_rag(
 def list_papers(workspace_id: str = "default") -> dict:
     workspace_id = _validate_workspace(workspace_id)
     chunks = all_chunks(workspace_id)
+    visuals = all_visuals(workspace_id)
     papers = {}
 
     for chunk in chunks:
@@ -472,6 +475,19 @@ def list_papers(workspace_id: str = "default") -> dict:
 
         if chunk.get("page") is not None:
             papers[source]["pages"].add(chunk["page"])
+
+    for visual in visuals:
+        source = visual.get("source", "unknown")
+        if source not in papers:
+            papers[source] = {
+                "filename": source,
+                "original_filename": visual.get("original_filename", source),
+                "chunks": 0,
+                "pages": set(),
+                "workspace_id": workspace_id,
+            }
+        if visual.get("page") is not None:
+            papers[source]["pages"].add(visual["page"])
 
     paper_list = []
 
@@ -501,10 +517,9 @@ def delete_paper(
         raise ValueError("Invalid document filename.")
 
     chunks = all_chunks(workspace_id)
+    visuals = all_visuals(workspace_id)
 
-    if not any(
-        chunk.get("source") == filename for chunk in chunks
-    ):
+    if not any(chunk.get("source") == filename for chunk in chunks) and not any(visual.get("source") == filename for visual in visuals):
         raise ValueError(
             f"Document '{filename}' was not found in this workspace."
         )

@@ -38,8 +38,8 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024
 
 
 app = FastAPI(
-    title="Hybrid Multimodal RAG Research Assistant",
-    version="2.1.0",
+    title="Research Prism — Multimodal Research Assistant",
+    version="3.0.0",
 )
 app.mount(
     "/visuals",
@@ -116,7 +116,7 @@ def require_workspace(workspace_id: str) -> dict:
 def health():
     return {
         "status": "ok",
-        "service": "Hybrid Multimodal RAG Research Assistant",
+        "service": "Research Prism — Multimodal Research Assistant",
     }
 
 

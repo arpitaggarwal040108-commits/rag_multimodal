@@ -109,7 +109,7 @@ If the retrieved evidence does not establish a descriptive cell, write
 "Insufficient evidence in the retrieved passages". Do not infer performance claims.
 """
 
-    return f"""You are InsightForge, a research-paper assistant. Answer the user's exact
+    return f"""You are Research Prism, a multimodal scientific research assistant. Answer the user's exact
 question using only the extracted text and supplied page images below.
 
 USER QUESTION (verbatim):
@@ -330,6 +330,60 @@ def _safe_comparison_fallback(question: str, image_references: str) -> str:
         "## Limitations\nThis fallback avoids presenting an invalid table as a reliable comparison.",
     ])
 
+def answer_research_text(question: str, text_context: str) -> dict:
+    """Generate a grounded text-only answer through the configured local Ollama model.
+
+    Returns an unavailable result rather than throwing on service failures, allowing
+    the caller to fall back to extractive retrieval without losing evidence.
+    """
+    question = str(question or "").strip()
+    text_context = str(text_context or "").strip()
+    if not question or not text_context:
+        return {"available": False, "answer": "", "reason": "Question or retrieved text context is empty."}
+
+    prompt = _build_prompt(
+        question=question,
+        text_context=text_context,
+        image_references="No visual assets were retrieved for this question. Base the answer on textual evidence only.",
+    )
+    endpoint = f"{OLLAMA_URL}/api/chat"
+    try:
+        response = requests.post(
+            endpoint,
+            json={
+                "model": VISION_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": 12288,
+                    "num_predict": 1600,
+                },
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.exceptions.Timeout:
+        return {"available": False, "answer": "", "reason": f"Ollama timed out after {VISION_TIMEOUT} seconds."}
+    except requests.exceptions.ConnectionError:
+        return {"available": False, "answer": "", "reason": f"Cannot connect to Ollama at {endpoint}."}
+    except requests.exceptions.HTTPError:
+        status = response.status_code if "response" in locals() else "unknown"
+        detail = response.text[:1000] if "response" in locals() else ""
+        return {"available": False, "answer": "", "reason": f"Ollama returned HTTP {status}: {detail}"}
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        return {"available": False, "answer": "", "reason": f"Local text generation failed: {exc}"}
+
+    answer = _format_markdown(payload.get("message", {}).get("content", ""))
+    is_comparison = _is_comparison_question(question)
+    if not answer or not _has_required_sections(answer):
+        return {"available": False, "answer": "", "reason": "The local model returned an answer that did not meet the required structure."}
+    if is_comparison and not _comparison_table_is_valid(answer, question):
+        return {"available": False, "answer": "", "reason": "The local model returned an invalid comparison table."}
+    return {"available": True, "answer": answer, "model": VISION_MODEL}
+
+
 def explain_research_images(
     question: str,
     visual_results: list[dict],
@@ -493,7 +547,7 @@ def explain_research_images(
 
     if must_retry:
         print(
-            "[InsightForge] Output validation failed (required sections or comparison table); retrying once."
+            "[Research Prism] Output validation failed (required sections or comparison table); retrying once."
         )
         retry_prompt = f"""Correct the answer below. Use only the supplied extracted text and images.
 Do not invent paper-specific findings or performance measurements.
@@ -547,11 +601,11 @@ Do not add an extra table row for caveats. Do not use a benchmark result for a n
                 answer_text = retry_text
             else:
                 print(
-                    "[InsightForge] Retry failed validation; returning a single clearly labelled fallback table."
+                    "[Research Prism] Retry failed validation; returning a single clearly labelled fallback table."
                 )
                 answer_text = _safe_comparison_fallback(question, image_references)
         except (requests.exceptions.RequestException, ValueError) as exc:
-            print(f"[InsightForge] Validation retry failed: {exc}")
+            print(f"[Research Prism] Validation retry failed: {exc}")
             answer_text = _safe_comparison_fallback(question, image_references)
 
     # Guard again so no malformed table can slip through on the original response.
